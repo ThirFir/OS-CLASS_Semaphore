@@ -7,6 +7,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.osclass.semaphore.databinding.ActivityMainBinding
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 
@@ -16,16 +17,14 @@ class MainActivity : AppCompatActivity() {
     private val buffer = Array<Message?>(N) { null }   // 크기가 N(4)인 원형 버퍼 (배열)
     private var _in = 0
     private var _out = 0
-    private val mutexP: Semaphore = MutexP()
-    private val mutexC: Semaphore = MutexC()
-    private val nrfull: Semaphore = Nrfull()
-    private val nrempty: Semaphore = Nrempty()
+    private val mutexP = Semaphore(1)
+    private val mutexC = Semaphore(1)
+    private val nrfull = Semaphore(0)
+    private val nrempty = Semaphore(N)      // N = 4
     private var messageNumber: Int = 1
 
     private val mainDispatcher = Dispatchers.Main
-    private val defaultDispatcher = Dispatchers.Default
     private val mainScope = CoroutineScope(mainDispatcher)
-    private val defaultScope = CoroutineScope(defaultDispatcher)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,26 +40,30 @@ class MainActivity : AppCompatActivity() {
             textNrempty.text = nrempty.s.toString()
         }
 
+
         binding.recyclerviewMutexp.layoutManager =
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, true)
-        binding.recyclerviewMutexp.adapter = QueueAdapter(mutexP.queue)
+        binding.recyclerviewMutexp.adapter = QueueAdapter(mutexP)
 
         binding.recyclerviewMutexc.layoutManager =
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
-        binding.recyclerviewMutexc.adapter = QueueAdapter(mutexC.queue)
+        binding.recyclerviewMutexc.adapter = QueueAdapter(mutexC)
 
         binding.recyclerviewNrfull.layoutManager =
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, true)
-        binding.recyclerviewNrfull.adapter = QueueAdapter(nrfull.queue)
+        binding.recyclerviewNrfull.adapter = QueueAdapter(nrfull)
 
         binding.recyclerviewNrempty.layoutManager =
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
-        binding.recyclerviewNrempty.adapter = QueueAdapter(nrempty.queue)
+        binding.recyclerviewNrempty.adapter = QueueAdapter(nrempty)
 
 
+        // 생산자 버튼 클릭 이벤트
         binding.buttonProducer.setOnClickListener {
             produce()
         }
+
+        // 소비자 버튼 클릭 이벤트
         binding.buttonConsumer.setOnClickListener {
             consume()
         }
@@ -72,8 +75,10 @@ class MainActivity : AppCompatActivity() {
             val m = Message("M${messageNumber++}") // Create a new message : m
             P(mutexP)
             P(nrempty)
-            buffer[_in] = m; setBufferInView(m)
-            _in = (_in + 1) % N; binding.textIn.text = _in.toString()
+            buffer[_in] = m;
+            setBufferInView(m)      // UI 갱신
+            _in = (_in + 1) % N;
+            binding.textIn.text = _in.toString()        // UI 갱신
             V(nrfull)
             V(mutexP)
         }
@@ -83,8 +88,10 @@ class MainActivity : AppCompatActivity() {
         mainScope.launch {
             P(mutexC)
             P(nrfull)
-            val m = buffer[_out]; setBufferOutView()       // Consume message m
-            _out = (_out + 1) % N; binding.textOut.text = _out.toString()
+            val m = buffer[_out];       // Consume message m
+            setBufferOutView()          // UI 갱신
+            _out = (_out + 1) % N;
+            binding.textOut.text = _out.toString()      // UI 갱신
             V(nrempty)
             V(mutexC)
         }
@@ -94,50 +101,44 @@ class MainActivity : AppCompatActivity() {
     private suspend fun P(S: Semaphore) {
         if (S.s > 0) {
             S.s -= 1
-            setSemaphoreView(S)
+            setSemaphoreView()     // UI 갱신
         } else {
             val mutex = Mutex().apply { lock() }
-            S.queue.add(mutex)
-            setSemaphoreView(S)
-            mutex.lock()        // 작업 대기
+            S.add(mutex) {
+                setSemaphoreView()  // UI 갱신
+                mutex.lock()        // 작업 중지
+            }
         }
     }
 
     /** V(S) 연산 */
     private fun V(S: Semaphore) {
         if (S.queue.isNotEmpty()) {
-            val mutex = S.queue.remove()
-            mutex.unlock()      // 작업 재개
+            S.remove() {
+                setSemaphoreView()  // UI 갱신
+                it.unlock()         // 작업 재개
+            }
         } else {
             S.s += 1
-        }
-        setSemaphoreView(S)
-    }
-
-    private fun setSemaphoreView(S: Semaphore) {
-        when (S) {
-            is MutexP -> {
-                binding.textMutexp.text = S.s.toString()
-                binding.recyclerviewMutexp.adapter = QueueAdapter(S.queue)
-            }
-
-            is MutexC -> {
-                binding.textMutexc.text = S.s.toString()
-                binding.recyclerviewMutexc.adapter = QueueAdapter(S.queue)
-            }
-
-            is Nrfull -> {
-                binding.textNrfull.text = S.s.toString()
-                binding.recyclerviewNrfull.adapter = QueueAdapter(S.queue)
-            }
-
-            is Nrempty -> {
-                binding.textNrempty.text = S.s.toString()
-                binding.recyclerviewNrempty.adapter = QueueAdapter(S.queue)
-            }
+            setSemaphoreView()      // UI 갱신
         }
     }
 
+
+    /** Semaphore UI 갱신 */
+    private fun setSemaphoreView() {
+        binding.textMutexp.text = mutexP.s.toString()
+        binding.textMutexc.text = mutexC.s.toString()
+        binding.textNrfull.text = nrfull.s.toString()
+        binding.textNrempty.text = nrempty.s.toString()
+
+        binding.recyclerviewMutexp.adapter = QueueAdapter(mutexP)
+        binding.recyclerviewMutexc.adapter = QueueAdapter(mutexC)
+        binding.recyclerviewNrfull.adapter = QueueAdapter(nrfull)
+        binding.recyclerviewNrempty.adapter = QueueAdapter(nrempty)
+    }
+
+    /** 원형 버퍼 UI 갱신 */
     private fun setBufferInView(message: Message) {
         when (_in) {
             0 -> {
@@ -158,6 +159,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 원형 버퍼 UI 갱신 */
     private fun setBufferOutView() {
         when (_out) {
             0 -> {
